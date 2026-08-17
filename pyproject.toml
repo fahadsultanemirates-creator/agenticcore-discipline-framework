@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "discipline-framework"
+version = "0.1.0"
+description = "Forex trading discipline-enforcement framework"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+include = ["discipline_framework*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,90 @@
+# =============================================================================
+# TRADING RULES — the client's discipline rules, encoded.
+# =============================================================================
+# Every value in this file is a PLACEHOLDER pending the client's actual
+# numbers. Nothing here needs to be "correct" for the pipeline to run — it's
+# realistic enough to exercise every rule check end-to-end. Replace the
+# values, not the structure, once we have his real rules; the field names
+# below are read directly by discipline_framework/config.py, and each field
+# is consumed by exactly one check in discipline_framework/rules/engine.py
+# (named in the comments).
+
+# -----------------------------------------------------------------------------
+# RISK — how much of the account can be exposed at once.
+# Used by: MaxRiskPerTradeCheck, MaxDailyLossCheck, MaxConcurrentPositionsCheck
+# -----------------------------------------------------------------------------
+risk:
+  # Max % of account equity allowed to be at risk (distance to stop-loss x
+  # position size) on any single open trade. Trade opened bigger than this
+  # is flagged even if it's currently winning — the rule is about exposure,
+  # not outcome.
+  max_risk_per_trade_pct: 2.0
+
+  # Max % of account equity the trader is allowed to lose in a single
+  # calendar day (realized + floating) before all trading must stop until
+  # the next session. This is the "stop the bleeding" circuit breaker.
+  max_daily_loss_pct: 5.0
+
+  # Max number of positions open at the same time, across all symbols.
+  # Guards against "revenge stacking" — opening more and more trades to
+  # chase a loss back.
+  max_concurrent_positions: 3
+
+# -----------------------------------------------------------------------------
+# TARGETS — exit discipline: every trade must have a plan, and the plan
+# must be followed.
+# Used by: StopLossRequiredCheck, TakeProfitRequiredCheck
+# -----------------------------------------------------------------------------
+targets:
+  # Every open position MUST have a stop-loss attached (require_stop_loss),
+  # and it should be within this many pips of a "typical" placement for the
+  # traded symbol. default_*_pips are reference values used for alerting
+  # ("this SL is 3x wider than usual — was it intentional?") — they are not
+  # a hard cap by themselves.
+  require_stop_loss: true
+  default_stop_loss_pips: 30
+
+  # Same idea for take-profit. require_take_profit=true means "no naked
+  # positions with no defined exit," matching the client's own rule that
+  # every trade closes at a *defined* pip target rather than being managed
+  # by feel mid-trade.
+  require_take_profit: true
+  default_take_profit_pips: 60
+
+# -----------------------------------------------------------------------------
+# COOLDOWN — mandatory time-outs after losses, to break the "revenge
+# trading" cycle that causes the worst blowups.
+# Used by: ConsecutiveLossCooldownCheck, MaxDailyLossCheck (cooldown half)
+# -----------------------------------------------------------------------------
+cooldown:
+  # After this many consecutive losing trades (closed, in order), no new
+  # positions may be opened for cooldown_minutes.
+  consecutive_losses_trigger: 2
+  cooldown_minutes: 60
+
+  # If max_daily_loss_pct (above) is breached, trading is locked out for
+  # this many minutes — default is effectively "for the rest of the
+  # trading day."
+  daily_loss_cooldown_minutes: 1440
+
+# -----------------------------------------------------------------------------
+# SESSION — when and what the trader is allowed to trade.
+# Used by: TradingSessionCheck, AllowedSymbolCheck, MaxTradesPerDayCheck
+# -----------------------------------------------------------------------------
+session:
+  # Symbols the trader actually trades. Anything else opened is flagged —
+  # catches both fat-finger symbol selection and "I got bored and tried
+  # something new" impulse trades.
+  allowed_symbols:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+
+  # Trading hours in UTC, 24h "HH:MM" format. Positions opened outside this
+  # window are flagged (e.g. late-night/low-liquidity impulse trades).
+  trading_start_utc: "07:00"
+  trading_end_utc: "16:00"
+
+  # Max number of new positions opened per calendar day, regardless of
+  # win/loss. Caps overtrading independent of the cooldown rules above.
+  max_trades_per_day: 5

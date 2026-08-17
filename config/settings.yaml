@@ -1,0 +1,52 @@
+# =============================================================================
+# APPLICATION SETTINGS — how the framework behaves. Not a trading rule file;
+# see rules.yaml for the trader's actual rules. Secrets (MT5 login, Telegram
+# token) live in .env, not here — this file is safe to commit.
+# =============================================================================
+
+enforcement:
+  # passive: monitor + alert only, never touches the account. (DEFAULT / SAFE)
+  # hybrid:  auto-enforces only the hard safety rules (max daily loss cutoff,
+  #          cooldown lockout); entries/exits otherwise stay manual.
+  # active:  can auto-execute exits/entries per the encoded rules.
+  #
+  # active and hybrid additionally require allow_live_execution: true below
+  # AND the DISCIPLINE_FRAMEWORK_CONFIRM_LIVE=YES environment variable, or
+  # the framework refuses to start. See docs/ENFORCEMENT_MODES.md.
+  mode: passive
+
+  # Hard gate on any live order placement/modification/close. Must be true
+  # for active/hybrid to run at all. Leave false until the client has
+  # explicitly signed off and we have his real rule numbers in rules.yaml.
+  allow_live_execution: false
+
+monitoring:
+  # How often (seconds) to pull account state from MT5 and re-run the rule
+  # checks.
+  poll_interval_seconds: 30
+
+  # How many days of closed-trade history to pull each cycle, to evaluate
+  # "consecutive losses" / "trades today" rules.
+  history_lookback_days: 2
+
+mt5:
+  # If true, always use the mock bridge even if the MetaTrader5 package is
+  # importable. Useful for demos/dev on any OS. --mock on the CLI overrides
+  # this to true; there is no CLI flag to force the real bridge on when this
+  # is true.
+  force_mock: false
+
+telegram:
+  enabled: true
+  # Alerts below this severity are logged but not sent, to avoid alert
+  # fatigue. One of: info, warning, critical.
+  min_severity: warning
+
+logging:
+  log_dir: logs
+  # Human-readable operational log (connections, errors, mode changes).
+  audit_log_file: audit.log
+  # Machine-readable one-JSON-object-per-line compliance log, one record per
+  # rule check per monitoring cycle. This is what stats.py reads.
+  compliance_log_file: compliance_log.jsonl
+  level: INFO

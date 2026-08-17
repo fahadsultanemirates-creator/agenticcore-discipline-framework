@@ -1,0 +1,14 @@
+# Core
+PyYAML>=6.0
+python-dotenv>=1.0
+pydantic>=2.6
+requests>=2.31
+
+# MT5 bridge — Windows-only (wraps the MT5 terminal's native DLL).
+# pip will fail to find a wheel for this on Linux/Mac; that's expected.
+# The framework detects the missing import and falls back to
+# discipline_framework.mt5_bridge.mock_client.MockMT5Client.
+MetaTrader5>=5.0.45; sys_platform == 'win32'
+
+# Testing
+pytest>=8.0
