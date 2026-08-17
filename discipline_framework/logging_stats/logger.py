@@ -40,15 +40,26 @@ def setup_logging(log_dir: Path, audit_log_file: str, level: str = "INFO") -> No
 
 
 class ComplianceLogger:
+    """Writes one account's compliance records. In the multi-account setup
+    each account gets its own ComplianceLogger pointed at its own file
+    (logs/compliance/<account_id>.jsonl) — see accounts.py — but every
+    record still carries account_id, so a file can be identified even if
+    moved/merged, and so a script could rebuild a merged view from several
+    accounts' files without guessing which account a bare record belongs to.
+    """
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def log_cycle(self, snapshot: AccountSnapshot, results: list[CheckResult], mode: str) -> None:
+    def log_cycle(
+        self, snapshot: AccountSnapshot, results: list[CheckResult], mode: str, account_id: str
+    ) -> None:
         with self.path.open("a", encoding="utf-8") as f:
             for result in results:
                 record = {
                     "timestamp": snapshot.as_of.isoformat(),
+                    "account_id": account_id,
                     "mode": mode,
                     "rule_id": result.rule_id,
                     "passed": result.passed,

@@ -1,0 +1,60 @@
+# =============================================================================
+# ACCOUNTS — one entry per MT5 account this deployment manages. The client
+# splits funds across multiple accounts rather than trading one big account,
+# so each account gets its own MT5 connection, its own rule file (they can
+# have different risk settings), and its own enforcement mode. A single
+# Telegram bot (config/settings.yaml) manages all of them, with commands
+# scoped by account id, e.g. /setrisk account_1 1.5.
+#
+# `account_1` / `account_2` below are PLACEHOLDERS — rename the ids (and the
+# matching config/rules/<id>.yaml files) to the client's real account names
+# once we have them. Renaming an id changes which state/log files it maps
+# to (config/rules_overrides/<id>.yaml, state/<id>.json,
+# logs/compliance/<id>.jsonl) — do it before real data accumulates under the
+# old name, not after.
+#
+# See docs/MULTI_ACCOUNT.md for the full reasoning behind this file's shape,
+# including why MT5 credentials are *env var names* rather than secrets.
+# =============================================================================
+
+accounts:
+  - id: account_1
+    display_name: "Account 1"
+    enabled: true
+    rules_file: config/rules/account_1.yaml
+
+    # Names of the .env variables holding this account's MT5 login — not
+    # the credentials themselves. See .env.example.
+    mt5:
+      login_env: MT5_ACCOUNT_1_LOGIN
+      password_env: MT5_ACCOUNT_1_PASSWORD
+      server_env: MT5_ACCOUNT_1_SERVER
+      terminal_path_env: MT5_ACCOUNT_1_TERMINAL_PATH
+
+    enforcement:
+      # passive: monitor + alert only, never touches the account. (DEFAULT / SAFE)
+      # hybrid:  auto-enforces only the hard safety rules (max daily loss
+      #          cutoff, cooldown lockout); entries/exits otherwise stay manual.
+      # active:  can auto-execute exits/entries per the encoded rules.
+      #
+      # active/hybrid additionally require the DISCIPLINE_FRAMEWORK_CONFIRM_LIVE=YES
+      # environment variable (one global switch for the whole deployment) —
+      # see docs/ENFORCEMENT_MODES.md.
+      mode: passive
+      # Per-account hard gate on live order placement/modification/close.
+      # Leave false until the client has signed off AND this account's
+      # rules_file holds his real numbers, not placeholders.
+      allow_live_execution: false
+
+  - id: account_2
+    display_name: "Account 2"
+    enabled: true
+    rules_file: config/rules/account_2.yaml
+    mt5:
+      login_env: MT5_ACCOUNT_2_LOGIN
+      password_env: MT5_ACCOUNT_2_PASSWORD
+      server_env: MT5_ACCOUNT_2_SERVER
+      terminal_path_env: MT5_ACCOUNT_2_TERMINAL_PATH
+    enforcement:
+      mode: passive
+      allow_live_execution: false

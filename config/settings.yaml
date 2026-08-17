@@ -1,28 +1,16 @@
 # =============================================================================
-# APPLICATION SETTINGS — how the framework behaves. Not a trading rule file;
-# see rules.yaml for the trader's actual rules. Secrets (MT5 login, Telegram
-# token) live in .env, not here — this file is safe to commit.
+# GLOBAL APPLICATION SETTINGS — shared across every MT5 account this
+# deployment manages. Per-account settings (rules, enforcement mode,
+# allow_live_execution, MT5 credentials) live in config/accounts.yaml and
+# config/rules/<account_id>.yaml instead — see docs/MULTI_ACCOUNT.md for why
+# the split falls where it does. Secrets (MT5 logins, Telegram token) live
+# in .env, not here — this file is safe to commit.
 # =============================================================================
-
-enforcement:
-  # passive: monitor + alert only, never touches the account. (DEFAULT / SAFE)
-  # hybrid:  auto-enforces only the hard safety rules (max daily loss cutoff,
-  #          cooldown lockout); entries/exits otherwise stay manual.
-  # active:  can auto-execute exits/entries per the encoded rules.
-  #
-  # active and hybrid additionally require allow_live_execution: true below
-  # AND the DISCIPLINE_FRAMEWORK_CONFIRM_LIVE=YES environment variable, or
-  # the framework refuses to start. See docs/ENFORCEMENT_MODES.md.
-  mode: passive
-
-  # Hard gate on any live order placement/modification/close. Must be true
-  # for active/hybrid to run at all. Leave false until the client has
-  # explicitly signed off and we have his real rule numbers in rules.yaml.
-  allow_live_execution: false
 
 monitoring:
   # How often (seconds) to pull account state from MT5 and re-run the rule
-  # checks.
+  # checks. Applies to every account — see docs/MULTI_ACCOUNT.md if you
+  # need different accounts polled at different rates.
   poll_interval_seconds: 30
 
   # How many days of closed-trade history to pull each cycle, to evaluate
@@ -30,10 +18,10 @@ monitoring:
   history_lookback_days: 2
 
 mt5:
-  # If true, always use the mock bridge even if the MetaTrader5 package is
-  # importable. Useful for demos/dev on any OS. --mock on the CLI overrides
-  # this to true; there is no CLI flag to force the real bridge on when this
-  # is true.
+  # If true, always use the mock bridge for every account, even where the
+  # MetaTrader5 package is importable. Useful for demos/dev on any OS.
+  # --mock on the CLI overrides this to true for all accounts; there is no
+  # CLI flag to force the real bridge on when this is true.
   force_mock: false
 
 telegram:
@@ -42,14 +30,22 @@ telegram:
   # fatigue. One of: info, warning, critical.
   min_severity: warning
 
-  # Telegram command interface (/setrisk, /status, /pause, ...) — lets the
-  # trader adjust his own live rules via chat. See docs/TELEGRAM_COMMANDS.md.
+  # Telegram command interface (/setrisk <account>, /status <account|all>,
+  # /pause <account|all>, ...) — one bot manages every account. See
+  # docs/TELEGRAM_COMMANDS.md.
   commands_enabled: true
 
-  # Whitelist of Telegram numeric user IDs allowed to issue commands.
-  # EMPTY = open access — anyone who messages the bot can change live
-  # trading rules. That's fine during development/testing; the app logs a
-  # loud warning on every startup while this stays empty as a reminder.
+  # Whitelist of Telegram numeric user IDs allowed to issue commands, for
+  # ALL accounts — there's one bot and (for this client) one trader, so a
+  # single global whitelist is simpler than per-account access lists and
+  # covers the actual threat model (a stranger finding the bot and tinkering
+  # with live rules). If this framework is ever used by a team managing
+  # different accounts, split this into a per-account list in
+  # config/accounts.yaml instead — see docs/MULTI_ACCOUNT.md.
+  #
+  # EMPTY = open access — anyone who messages the bot can change ANY
+  # account's live trading rules. That's fine during development/testing;
+  # the app logs a loud warning on every startup while this stays empty.
   # Before handing this off to the client, set this to just his user ID,
   # e.g. [123456789]. Find a user's ID by having them message the bot once
   # and checking the audit log, or via @userinfobot on Telegram.
@@ -57,9 +53,12 @@ telegram:
 
 logging:
   log_dir: logs
-  # Human-readable operational log (connections, errors, mode changes).
+  # Human-readable operational log (connections, errors, mode changes),
+  # shared across all accounts — each line is tagged with the account id
+  # that triggered it, so `grep account_2 logs/audit.log` still works.
   audit_log_file: audit.log
-  # Machine-readable one-JSON-object-per-line compliance log, one record per
-  # rule check per monitoring cycle. This is what stats.py reads.
-  compliance_log_file: compliance_log.jsonl
+  # Machine-readable one-JSON-object-per-line compliance log, one file per
+  # account: <log_dir>/<compliance_log_dir>/<account_id>.jsonl. This is
+  # what stats.py reads, per-account or aggregated across all of them.
+  compliance_log_dir: compliance
   level: INFO

@@ -102,3 +102,36 @@ class ComplianceStats:
 def _parse_ts(value: str) -> datetime:
     dt = datetime.fromisoformat(value)
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def aggregate_reports(reports: list[ComplianceReport]) -> ComplianceReport:
+    """Combines several accounts' already-generated ComplianceReports into
+    one — e.g. "compliance across all accounts this week." Each input
+    report should cover the same period (scripts/compliance_report.py
+    generates them that way); the earliest period_start and latest
+    period_end across the inputs are used as a sanity-preserving fallback
+    if they don't quite line up."""
+    if not reports:
+        raise ValueError("aggregate_reports() needs at least one report")
+
+    total = sum(r.total_checks for r in reports)
+    passed = sum(r.passed_checks for r in reports)
+    violations = sum(r.violation_count for r in reports)
+
+    by_rule: Counter = Counter()
+    by_severity: Counter = Counter()
+    for r in reports:
+        by_rule.update(r.violations_by_rule)
+        by_severity.update(r.violations_by_severity)
+
+    return ComplianceReport(
+        period_start=min(r.period_start for r in reports),
+        period_end=max(r.period_end for r in reports),
+        total_checks=total,
+        passed_checks=passed,
+        violation_count=violations,
+        compliance_rate=(passed / total * 100) if total else 100.0,
+        violations_by_rule=dict(by_rule),
+        violations_by_severity=dict(by_severity),
+        discipline_saves=sum(r.discipline_saves for r in reports),
+    )

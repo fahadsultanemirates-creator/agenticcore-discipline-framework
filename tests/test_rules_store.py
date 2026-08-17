@@ -72,6 +72,43 @@ def test_editing_baseline_after_override_keeps_other_fields_live(tmp_path, rules
     assert reloaded.rules.session.max_trades_per_day == 10  # baseline edit still takes effect
 
 
+def test_reload_if_stale_noop_without_a_backing_file(rules):
+    store = RulesStore(rules)  # no base_rules_path
+    assert store.reload_if_stale() is False
+
+
+def test_reload_if_stale_noop_when_nothing_changed(tmp_path, rules):
+    import yaml
+
+    base_path = tmp_path / "rules.yaml"
+    with base_path.open("w") as f:
+        yaml.safe_dump(rules.model_dump(mode="json"), f)
+
+    store = RulesStore.load(base_path)
+    assert store.reload_if_stale() is False
+
+
+def test_reload_if_stale_picks_up_a_second_stores_override(tmp_path, rules):
+    """The mechanism that lets a Telegram bot process and an account
+    worker process coordinate through nothing but the filesystem."""
+    import yaml
+
+    base_path = tmp_path / "rules.yaml"
+    overrides_path = tmp_path / "rules_overrides.yaml"
+    with base_path.open("w") as f:
+        yaml.safe_dump(rules.model_dump(mode="json"), f)
+
+    worker_side = RulesStore.load(base_path, overrides_path=overrides_path)
+    bot_side = RulesStore.load(base_path, overrides_path=overrides_path)
+
+    bot_side.set_max_risk_per_trade_pct(1.25)
+    assert worker_side.rules.risk.max_risk_per_trade_pct != 1.25  # not yet reloaded
+
+    assert worker_side.reload_if_stale() is True
+    assert worker_side.rules.risk.max_risk_per_trade_pct == 1.25
+    assert worker_side.reload_if_stale() is False  # already up to date
+
+
 def test_setters_for_all_command_backed_fields(rules):
     store = RulesStore(rules)
     updated = store.set_max_daily_loss_pct(3.0)

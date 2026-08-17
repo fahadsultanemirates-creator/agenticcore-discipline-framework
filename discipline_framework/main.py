@@ -1,154 +1,62 @@
-"""Wires everything together and runs the monitoring loop:
+"""Wires together and runs a multi-account deployment:
 
-    MT5Bridge.get_account_snapshot()
-        -> RuleEngine.evaluate()          (reads live rules from RulesStore)
-        -> ComplianceLogger.log_cycle()   (always, every check, pass or fail)
-        -> Enforcer.handle()              (alert in passive; alert + hard-safety
-                                            action in active/hybrid; no-op while
-                                            /pause'd)
+    for each enabled account (config/accounts.yaml):
+        AccountWorker.run_forever() in its own thread
+            MT5Bridge.get_account_snapshot()
+                -> RuleEngine.evaluate()          (that account's live RulesStore)
+                -> ComplianceLogger.log_cycle()   (always, tagged with account_id)
+                -> Enforcer.handle()              (per that account's mode; no-op while paused)
 
-Alongside the loop, a TelegramCommandBot runs in its own thread, sharing the
-same RulesStore and (Pausable)Enforcer — /setrisk et al. mutate the store
-that RuleEngine reads from every cycle, and /pause toggles the enforcer's
-`enabled` flag. See discipline_framework/commands/ and
-docs/TELEGRAM_COMMANDS.md.
+    + one shared TelegramCommandBot thread — commands name an account_id
+      and are routed to that account's AccountRuntime.
 
-See scripts/run_monitor.py for the CLI entrypoint.
+MultiAccountSupervisor (this module) runs every account in ONE process —
+fine for the mock bridge, and for real MT5 as long as at most one account
+in the process uses the real bridge (the MetaTrader5 SDK only supports one
+terminal connection per process). For a real multi-account deployment with
+more than one live account, run each account standalone instead:
+scripts/run_account.py <account_id> (one process per account) plus
+scripts/run_bot.py (the shared Telegram interface, no MT5 connection of its
+own). Both topologies use the exact same AccountRuntime/AccountWorker code
+and coordinate through the same on-disk rules/pause state either way — see
+docs/MULTI_ACCOUNT.md.
+
+See scripts/run_monitor.py for this module's CLI entrypoint.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 from pathlib import Path
 
-from discipline_framework.alerts.telegram import Alerter, NullAlerter, TelegramAlerter
+from discipline_framework.accounts import AccountRuntime, AccountWorker, build_account_runtime, build_alerter
 from discipline_framework.commands import CommandHandlers, TelegramCommandBot
 from discipline_framework.config import (
-    DEFAULT_RULES_OVERRIDES_PATH,
-    DEFAULT_RULES_PATH,
+    DEFAULT_ACCOUNTS_PATH,
     PROJECT_ROOT,
     Settings,
-    load_mt5_credentials,
+    load_accounts,
     load_settings,
     load_telegram_credentials,
 )
-from discipline_framework.enforcement import Enforcer, PausableEnforcer, build_enforcer
-from discipline_framework.logging_stats.logger import ComplianceLogger, setup_logging
-from discipline_framework.mt5_bridge.client import MT5_AVAILABLE, MetaTrader5Client
-from discipline_framework.mt5_bridge.interface import MT5Bridge
-from discipline_framework.mt5_bridge.mock_client import MockMT5Client
-from discipline_framework.rules.engine import RuleEngine
-from discipline_framework.rules.store import RulesStore
+from discipline_framework.logging_stats.logger import setup_logging
 
 logger = logging.getLogger("discipline_framework.main")
 
 
-def build_bridge(settings: Settings, use_mock: bool) -> MT5Bridge:
-    if use_mock or settings.mt5.force_mock or not MT5_AVAILABLE:
-        if not use_mock and not settings.mt5.force_mock:
-            logger.warning("MetaTrader5 package unavailable on this platform; using MockMT5Client")
-        return MockMT5Client()
-
-    creds = load_mt5_credentials()
-    if creds.login is None or not creds.password or not creds.server:
-        raise RuntimeError(
-            "Real MT5 bridge requested but MT5_LOGIN/MT5_PASSWORD/MT5_SERVER "
-            "are not set in the environment (.env). Fill those in, or run "
-            "with --mock."
-        )
-    live_execution_enabled = settings.enforcement.mode != "passive" and settings.enforcement.allow_live_execution
-    return MetaTrader5Client(
-        login=creds.login,
-        password=creds.password,
-        server=creds.server,
-        terminal_path=creds.terminal_path,
-        history_lookback_days=settings.monitoring.history_lookback_days,
-        live_execution_enabled=live_execution_enabled,
-    )
-
-
-def build_alerter(settings: Settings) -> Alerter:
-    if not settings.telegram.enabled:
-        return NullAlerter()
-    creds = load_telegram_credentials()
-    if not creds.bot_token or not creds.chat_id:
-        logger.warning("Telegram enabled but TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set; alerts will only be logged")
-        return NullAlerter()
-    return TelegramAlerter(
-        bot_token=creds.bot_token,
-        chat_id=creds.chat_id,
-        min_severity=settings.telegram.min_severity,
-    )
-
-
-def build_command_bot(
-    settings: Settings, rules_store: RulesStore, enforcer: PausableEnforcer
-) -> TelegramCommandBot | None:
+def build_command_bot(settings: Settings, accounts: dict[str, AccountRuntime]) -> TelegramCommandBot | None:
     if not settings.telegram.enabled or not settings.telegram.commands_enabled:
         return None
     creds = load_telegram_credentials()
     if not creds.bot_token:
         logger.warning("Telegram commands enabled but TELEGRAM_BOT_TOKEN not set; command interface disabled")
         return None
-    handlers = CommandHandlers(rules_store=rules_store, enforcer=enforcer)
     return TelegramCommandBot(
         bot_token=creds.bot_token,
-        handlers=handlers,
+        handlers=CommandHandlers(accounts=accounts),
         authorized_user_ids=settings.telegram.authorized_user_ids,
     )
-
-
-class MonitoringLoop:
-    def __init__(
-        self,
-        engine: RuleEngine,
-        bridge: MT5Bridge,
-        enforcer: Enforcer,
-        compliance_logger: ComplianceLogger,
-        poll_interval_seconds: int,
-        command_bot: TelegramCommandBot | None = None,
-    ) -> None:
-        self.engine = engine
-        self.bridge = bridge
-        self.enforcer = enforcer
-        self.compliance_logger = compliance_logger
-        self.poll_interval_seconds = poll_interval_seconds
-        self.command_bot = command_bot
-        self._command_bot_thread: threading.Thread | None = None
-
-    def run_once(self):
-        snapshot = self.bridge.get_account_snapshot()
-        results = self.engine.evaluate(snapshot)
-        self.compliance_logger.log_cycle(snapshot, results, self.enforcer.mode_name)
-        self.enforcer.handle(results, self.bridge, snapshot)
-        return results
-
-    def run_forever(self) -> None:
-        logger.info(
-            "Monitoring loop started (mode=%s, poll_interval=%ss)",
-            self.enforcer.mode_name,
-            self.poll_interval_seconds,
-        )
-        if self.command_bot is not None:
-            self._command_bot_thread = threading.Thread(
-                target=self.command_bot.run_forever, name="telegram-commands", daemon=True
-            )
-            self._command_bot_thread.start()
-        try:
-            while True:
-                try:
-                    self.run_once()
-                except Exception:
-                    logger.exception("Error during monitoring cycle; will retry next cycle")
-                time.sleep(self.poll_interval_seconds)
-        except KeyboardInterrupt:
-            logger.info("Interrupted by user, shutting down")
-        finally:
-            if self.command_bot is not None:
-                self.command_bot.stop()
-            self.bridge.disconnect()
 
 
 def _resolve_log_dir(settings: Settings) -> Path:
@@ -156,7 +64,59 @@ def _resolve_log_dir(settings: Settings) -> Path:
     return log_dir if log_dir.is_absolute() else PROJECT_ROOT / log_dir
 
 
-def build_monitoring_loop(use_mock: bool = False) -> MonitoringLoop:
+class MultiAccountSupervisor:
+    def __init__(
+        self,
+        workers: list[AccountWorker],
+        command_bot: TelegramCommandBot | None,
+    ) -> None:
+        self.workers = workers
+        self.command_bot = command_bot
+        self._worker_threads: list[threading.Thread] = []
+        self._bot_thread: threading.Thread | None = None
+
+    def run_forever(self) -> None:
+        logger.info(
+            "Starting %d account worker(s): %s",
+            len(self.workers),
+            ", ".join(w.account_id for w in self.workers),
+        )
+        for worker in self.workers:
+            thread = threading.Thread(
+                target=worker.run_forever, name=f"account-{worker.account_id}", daemon=True
+            )
+            self._worker_threads.append(thread)
+            thread.start()
+
+        if self.command_bot is not None:
+            self._bot_thread = threading.Thread(
+                target=self.command_bot.run_forever, name="telegram-commands", daemon=True
+            )
+            self._bot_thread.start()
+
+        try:
+            while any(t.is_alive() for t in self._worker_threads):
+                for t in self._worker_threads:
+                    t.join(timeout=1.0)
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user, shutting down")
+        else:
+            logger.error("All account workers have stopped; shutting down")
+        finally:
+            self._shutdown()
+
+    def _shutdown(self) -> None:
+        for worker in self.workers:
+            worker.stop()
+        if self.command_bot is not None:
+            self.command_bot.stop()
+        for t in self._worker_threads:
+            t.join(timeout=10)
+        if self._bot_thread is not None:
+            self._bot_thread.join(timeout=10)
+
+
+def build_supervisor(use_mock: bool = False) -> MultiAccountSupervisor:
     settings = load_settings()
     log_dir = _resolve_log_dir(settings)
 
@@ -166,45 +126,114 @@ def build_monitoring_loop(use_mock: bool = False) -> MonitoringLoop:
         level=settings.logging.level,
     )
 
-    rules_store = RulesStore.load(DEFAULT_RULES_PATH, overrides_path=DEFAULT_RULES_OVERRIDES_PATH)
-    bridge = build_bridge(settings, use_mock=use_mock)
+    compliance_log_dir = log_dir / settings.logging.compliance_log_dir
     alerter = build_alerter(settings)
-    enforcer = PausableEnforcer(
-        build_enforcer(
-            mode=settings.enforcement.mode,
-            alerter=alerter,
-            allow_live_execution=settings.enforcement.allow_live_execution,
+
+    accounts = [a for a in load_accounts() if a.enabled]
+    if not accounts:
+        raise RuntimeError(f"No enabled accounts in {DEFAULT_ACCOUNTS_PATH}")
+
+    runtimes: dict[str, AccountRuntime] = {}
+    workers: list[AccountWorker] = []
+    for account in accounts:
+        runtime = build_account_runtime(account, settings, alerter, compliance_log_dir, use_mock=use_mock)
+        runtimes[account.id] = runtime
+        workers.append(AccountWorker(runtime, poll_interval_seconds=settings.monitoring.poll_interval_seconds))
+
+        logger.info(
+            "[%s] Configured: mode=%s, allow_live_execution=%s",
+            account.id,
+            account.enforcement.mode,
+            account.enforcement.allow_live_execution,
         )
-    )
-    compliance_logger = ComplianceLogger(log_dir / settings.logging.compliance_log_file)
-    engine = RuleEngine(rules_store)
-    command_bot = build_command_bot(settings, rules_store, enforcer)
+        if runtime.rules_store.overrides:
+            logger.info(
+                "[%s] Loaded live rule overrides from a previous session: %s",
+                account.id,
+                runtime.rules_store.overrides,
+            )
 
-    if not bridge.connect():
-        raise RuntimeError("Failed to connect to MT5 bridge")
-
+    command_bot = build_command_bot(settings, runtimes)
     logger.info(
-        "Configured: mode=%s, allow_live_execution=%s, telegram=%s, commands=%s",
-        settings.enforcement.mode,
-        settings.enforcement.allow_live_execution,
+        "Telegram: alerts=%s, commands=%s",
         type(alerter).__name__,
         "enabled" if command_bot else "disabled",
     )
-    if rules_store.overrides:
-        logger.info("Loaded live rule overrides from a previous session: %s", rules_store.overrides)
 
-    return MonitoringLoop(
-        engine=engine,
-        bridge=bridge,
-        enforcer=enforcer,
-        compliance_logger=compliance_logger,
-        poll_interval_seconds=settings.monitoring.poll_interval_seconds,
-        command_bot=command_bot,
+    return MultiAccountSupervisor(workers=workers, command_bot=command_bot)
+
+
+def build_single_account_worker(account_id: str, use_mock: bool = False) -> AccountWorker:
+    """Builds one account's worker in isolation, with no other account's
+    state touched — the entrypoint for scripts/run_account.py, the
+    recommended way to run more than one account against the real MT5
+    bridge simultaneously (each in its own OS process)."""
+    settings = load_settings()
+    log_dir = _resolve_log_dir(settings)
+
+    setup_logging(
+        log_dir=log_dir,
+        audit_log_file=settings.logging.audit_log_file,
+        level=settings.logging.level,
     )
+
+    accounts_by_id = {a.id: a for a in load_accounts()}
+    account = accounts_by_id.get(account_id)
+    if account is None:
+        raise ValueError(f"Unknown account '{account_id}'. Known accounts: {', '.join(accounts_by_id) or '(none)'}")
+    if not account.enabled:
+        raise ValueError(f"Account '{account_id}' is disabled in {DEFAULT_ACCOUNTS_PATH}")
+
+    compliance_log_dir = log_dir / settings.logging.compliance_log_dir
+    alerter = build_alerter(settings)
+    runtime = build_account_runtime(account, settings, alerter, compliance_log_dir, use_mock=use_mock)
+
+    logger.info(
+        "[%s] Configured: mode=%s, allow_live_execution=%s",
+        account.id,
+        account.enforcement.mode,
+        account.enforcement.allow_live_execution,
+    )
+    return AccountWorker(runtime, poll_interval_seconds=settings.monitoring.poll_interval_seconds)
+
+
+def build_command_only_bot(use_mock: bool = False) -> TelegramCommandBot:
+    """Builds a Telegram command bot with access to every enabled account's
+    RulesStore/PausableEnforcer, but never connects any of their MT5
+    bridges — the entrypoint for scripts/run_bot.py, for running the
+    command interface as its own process, separate from any account's
+    monitoring loop. This process only reads/writes each account's rules
+    and pause state on disk; the actual monitoring happens wherever that
+    account's AccountWorker is running (in-process via run_monitor.py, or
+    standalone via run_account.py)."""
+    settings = load_settings()
+    log_dir = _resolve_log_dir(settings)
+
+    setup_logging(
+        log_dir=log_dir,
+        audit_log_file=settings.logging.audit_log_file,
+        level=settings.logging.level,
+    )
+
+    compliance_log_dir = log_dir / settings.logging.compliance_log_dir
+    alerter = build_alerter(settings)
+
+    accounts = [a for a in load_accounts() if a.enabled]
+    if not accounts:
+        raise RuntimeError(f"No enabled accounts in {DEFAULT_ACCOUNTS_PATH}")
+
+    runtimes = {
+        account.id: build_account_runtime(account, settings, alerter, compliance_log_dir, use_mock=use_mock)
+        for account in accounts
+    }
+    command_bot = build_command_bot(settings, runtimes)
+    if command_bot is None:
+        raise RuntimeError("Telegram commands are disabled, or TELEGRAM_BOT_TOKEN is not set — nothing to run.")
+    return command_bot
 
 
 def main() -> None:
-    build_monitoring_loop().run_forever()
+    build_supervisor().run_forever()
 
 
 if __name__ == "__main__":

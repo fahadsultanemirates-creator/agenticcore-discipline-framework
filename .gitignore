@@ -5,7 +5,9 @@ venv/
 .env
 logs/*.jsonl
 logs/*.log
-config/rules_overrides.yaml
+logs/**/*.jsonl
+config/rules_overrides/
+state/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/

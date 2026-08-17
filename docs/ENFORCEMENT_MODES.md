@@ -1,7 +1,10 @@
 # Enforcement modes
 
-Set via `enforcement.mode` in `config/settings.yaml`. One of `passive`,
-`hybrid`, `active`.
+Set **per account**, via `enforcement.mode` in that account's entry in
+`config/accounts.yaml`. One of `passive`, `hybrid`, `active` — see
+[`docs/MULTI_ACCOUNT.md`](MULTI_ACCOUNT.md) for why this is per-account
+rather than a single global setting (different accounts can run different
+risk postures) and for how the safety gate below still applies deployment-wide.
 
 ## passive (default)
 
@@ -45,15 +48,24 @@ See `discipline_framework/enforcement/base.py`.
 
 ## The live-execution safety gate
 
-`hybrid` and `active` refuse to construct unless **both** of these are true:
+`hybrid` and `active` refuse to construct for a given account unless
+**both** of these are true:
 
-1. `enforcement.allow_live_execution: true` in `config/settings.yaml`
-2. The environment variable `DISCIPLINE_FRAMEWORK_CONFIRM_LIVE=YES`
+1. That account's `enforcement.allow_live_execution: true` in
+   `config/accounts.yaml` — a **per-account** switch.
+2. The environment variable `DISCIPLINE_FRAMEWORK_CONFIRM_LIVE=YES` — a
+   single **deployment-wide** switch, not per-account.
 
 Missing either raises `LiveExecutionNotConfirmed` at startup, before any
-connection to MT5 is made. This is a deliberate double confirmation: one
-lives in a file that's easy to review/diff, the other is an explicit,
-session-scoped opt-in that isn't persisted anywhere by default.
+connection to MT5 is made, for that account only — other accounts are
+unaffected. This is a deliberate two-layer confirmation:
+`allow_live_execution` says "this specific account is cleared for live
+execution"; `DISCIPLINE_FRAMEWORK_CONFIRM_LIVE` says "this deployment is
+allowed to place live orders at all." Requiring both means turning on live
+trading for a new account is one YAML line, reviewable in a diff, but can
+never take effect unless someone has also deliberately set the environment
+variable on that specific machine/session — an operator can't accidentally
+ship a config change that goes live by itself.
 
 The concrete MT5 client (`MetaTrader5Client`) *also* independently checks a
 `live_execution_enabled` flag before any write call, so a bug in the
@@ -64,13 +76,15 @@ enforcement layer alone can't cause a live order — see
 
 1. **Passive + mock bridge** (`--mock`) — validate the pipeline end-to-end
    with no MT5 terminal at all.
-2. **Passive + real MT5, demo account** — validate real data flows through
-   correctly; alerts should match what you'd expect from your own trade
-   history.
-3. **Passive + real MT5, live account** — once `config/rules.yaml` holds
-   the client's actual numbers, run passive for a while and compare its
-   alerts against his own sense of when he broke a rule.
+2. **Passive + real MT5, demo account(s)** — validate real data flows
+   through correctly; alerts should match what you'd expect from your own
+   trade history, for every account.
+3. **Passive + real MT5, live accounts** — once each account's
+   `config/rules/<account_id>.yaml` holds the client's actual numbers for
+   that account, run passive for a while and compare its alerts against
+   his own sense of when he broke a rule.
 4. **Hybrid** — only after the client has explicitly asked for the hard
-   safety cutoffs to be automatic, and only on a demo account first.
-5. **Active** — revisit once hybrid has a track record and the client wants
-   more automated beyond the two hard cutoffs.
+   safety cutoffs to be automatic on a given account, and only on a demo
+   account first. Enable it account-by-account, not all at once.
+5. **Active** — revisit once hybrid has a track record on that account and
+   the client wants more automated beyond the two hard cutoffs.

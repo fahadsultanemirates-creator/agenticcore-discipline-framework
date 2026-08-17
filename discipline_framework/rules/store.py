@@ -1,24 +1,36 @@
-"""RulesStore: the single mutable source of truth for TradingRules at
-runtime, shared between the monitoring loop (reads) and the Telegram
-command interface (writes).
+"""RulesStore: the single mutable source of truth for one account's
+TradingRules at runtime — shared between that account's AccountWorker
+(reads every cycle) and the Telegram command interface (writes).
 
-Design: config/rules.yaml stays the hand-edited, heavily-commented
-baseline. Telegram-driven changes are never written back into it — they're
-tracked separately as a sparse "overrides" patch (only the fields actually
-changed via chat), persisted to config/rules_overrides.yaml. On load, the
-overrides are deep-merged on top of the baseline. That means:
+Design: config/rules/<account_id>.yaml stays the hand-edited, commented
+baseline for that account. Telegram-driven changes are never written back
+into it — they're tracked separately as a sparse "overrides" patch (only
+the fields actually changed via chat), persisted to
+config/rules_overrides/<account_id>.yaml. On load, the overrides are
+deep-merged on top of the baseline. That means:
 
-- A dev can keep editing/re-deploying config/rules.yaml without a stray
-  Telegram override silently reverting or masking unrelated fields.
+- A dev can keep editing/re-deploying an account's rules.yaml without a
+  stray Telegram override silently reverting or masking unrelated fields.
 - The overrides file is a plain, readable audit trail of exactly what was
   changed live and to what — not a full rules dump.
 - Every write is validated (via TradingRules) *before* being committed or
   persisted, so a bad value from a command never corrupts live state.
 
-Thread-safety: reads/writes are guarded by a lock, since the monitoring
-loop and the Telegram polling thread both touch this concurrently. `.rules`
-always returns a fully-formed, already-validated TradingRules snapshot —
-never a partially-applied one.
+Cross-process note: in production, each account's MT5 connection typically
+runs in its own OS process (see docs/MULTI_ACCOUNT.md — the MetaTrader5
+package only supports one terminal connection per process), while the
+Telegram command bot may run in a different process again. A RulesStore
+constructed via .load() therefore supports reload_if_stale(), which
+re-reads both files from disk if either's mtime has changed since last
+load — that's how a /setrisk issued to the bot process reaches the account
+worker process's next monitoring cycle, without any IPC beyond the
+filesystem. Call it once per cycle; it's a cheap stat() call when nothing
+changed.
+
+Thread-safety: reads/writes are guarded by a lock, since a worker's own
+thread and the Telegram polling thread (when they do share a process) both
+touch this concurrently. `.rules` always returns a fully-formed,
+already-validated TradingRules snapshot — never a partially-applied one.
 """
 
 from __future__ import annotations
@@ -32,24 +44,26 @@ from discipline_framework.rules.models import TradingRules
 
 
 class RulesStore:
-    def __init__(self, rules: TradingRules, overrides_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        rules: TradingRules,
+        overrides_path: Path | None = None,
+        base_rules_path: Path | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self._base_data = rules.model_dump(mode="json")
         self._overrides: dict = {}
         self._overrides_path = overrides_path
+        self._base_rules_path = base_rules_path
         self._rules = rules
+        self._base_mtime = _mtime(base_rules_path)
+        self._overrides_mtime = _mtime(overrides_path)
 
     @classmethod
     def load(cls, base_rules_path: Path, overrides_path: Path | None = None) -> "RulesStore":
         base_rules = TradingRules.model_validate(_load_yaml(base_rules_path))
-        store = cls(base_rules, overrides_path=overrides_path)
-
-        if overrides_path and overrides_path.exists():
-            overrides = _load_yaml(overrides_path)
-            if overrides:
-                merged = _deep_merge(store._base_data, overrides)
-                store._rules = TradingRules.model_validate(merged)
-                store._overrides = overrides
+        store = cls(base_rules, overrides_path=overrides_path, base_rules_path=base_rules_path)
+        store.reload_if_stale(force=True)
         return store
 
     @property
@@ -63,6 +77,32 @@ class RulesStore:
         prior run's persisted overrides). Empty means rules.yaml as-is."""
         with self._lock:
             return dict(self._overrides)
+
+    def reload_if_stale(self, force: bool = False) -> bool:
+        """Re-reads the baseline and overrides files from disk if either
+        has changed since last loaded (by mtime). Returns True if a reload
+        actually happened. A no-op (returns False) for a store not built
+        via .load() — e.g. tests constructing a bare TradingRules directly,
+        which have no files to reload from."""
+        if not self._base_rules_path:
+            return False
+        with self._lock:
+            base_mtime = _mtime(self._base_rules_path)
+            overrides_mtime = _mtime(self._overrides_path)
+            if not force and base_mtime == self._base_mtime and overrides_mtime == self._overrides_mtime:
+                return False
+
+            base_data = _load_yaml(self._base_rules_path)
+            overrides = _load_yaml(self._overrides_path) if self._overrides_path else {}
+            merged = _deep_merge(base_data, overrides)
+            new_rules = TradingRules.model_validate(merged)  # validates before committing anything
+
+            self._base_data = base_data
+            self._overrides = overrides
+            self._rules = new_rules
+            self._base_mtime = base_mtime
+            self._overrides_mtime = overrides_mtime
+            return True
 
     def set_max_risk_per_trade_pct(self, value: float) -> TradingRules:
         return self._apply_override({"risk": {"max_risk_per_trade_pct": value}})
@@ -112,11 +152,24 @@ class RulesStore:
         with tmp_path.open("w", encoding="utf-8") as f:
             yaml.safe_dump(self._overrides, f, sort_keys=False)
         tmp_path.replace(self._overrides_path)  # atomic on POSIX
+        self._overrides_mtime = _mtime(self._overrides_path)
+
+
+def _mtime(path: Path | None) -> float | None:
+    if path is None:
+        return None
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return None
 
 
 def _load_yaml(path: Path) -> dict:
-    with path.open(encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
 
 
 def _deep_merge(base: dict, overrides: dict) -> dict:

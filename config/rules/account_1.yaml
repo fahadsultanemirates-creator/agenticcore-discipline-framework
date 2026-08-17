@@ -1,5 +1,9 @@
 # =============================================================================
-# TRADING RULES — the client's discipline rules, encoded.
+# TRADING RULES for account "account_1" — the client's discipline rules,
+# encoded. Referenced by config/accounts.yaml's `rules_file` for this
+# account; rename the file/id pair once we know the client's real account
+# names. See docs/MULTI_ACCOUNT.md for how multiple accounts each get their
+# own copy of this file.
 # =============================================================================
 # Every value in this file is a PLACEHOLDER pending the client's actual
 # numbers. Nothing here needs to be "correct" for the pipeline to run — it's
@@ -7,7 +11,9 @@
 # values, not the structure, once we have his real rules; the field names
 # below are read directly by discipline_framework/config.py, and each field
 # is consumed by exactly one check in discipline_framework/rules/engine.py
-# (named in the comments).
+# (named in the comments). This file is the fully-commented reference copy —
+# other accounts' rule files (config/rules/*.yaml) keep the same fields with
+# shorter comments and point back here for the full explanation.
 
 # -----------------------------------------------------------------------------
 # RISK — how much of the account can be exposed at once.

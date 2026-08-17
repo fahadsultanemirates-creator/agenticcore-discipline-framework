@@ -1,0 +1,33 @@
+# =============================================================================
+# TRADING RULES for account "account_2" — a second placeholder account,
+# deliberately set more conservatively than account_1's to demonstrate that
+# each account can carry its own risk posture. Referenced by
+# config/accounts.yaml's `rules_file` for this account. Field-by-field
+# meaning and which check in discipline_framework/rules/engine.py consumes
+# each one: see the fully-commented config/rules/account_1.yaml — the
+# structure here is identical, just the numbers differ.
+# =============================================================================
+
+risk:
+  max_risk_per_trade_pct: 1.0 # tighter than account_1's 2.0
+  max_daily_loss_pct: 3.0 # tighter than account_1's 5.0
+  max_concurrent_positions: 2
+
+targets:
+  require_stop_loss: true
+  default_stop_loss_pips: 20
+  require_take_profit: true
+  default_take_profit_pips: 40
+
+cooldown:
+  consecutive_losses_trigger: 2
+  cooldown_minutes: 120 # longer cooldown than account_1's 60
+  daily_loss_cooldown_minutes: 1440
+
+session:
+  allowed_symbols:
+    - EURUSD
+    - USDJPY
+  trading_start_utc: "07:00"
+  trading_end_utc: "16:00"
+  max_trades_per_day: 3 # lower cap than account_1's 5
