@@ -26,25 +26,40 @@ rules under emotion or impulse.
 - All numeric trading rules in `config/rules.yaml` are **placeholders**.
   They must be replaced with the client's actual numbers before this is
   used for anything but read-only monitoring in a demo/practice account.
+- The Telegram command interface (below) ships with an **open** access
+  whitelist for development. Lock it to the client's Telegram user ID
+  before real money is on the line — see
+  [`docs/TELEGRAM_COMMANDS.md`](docs/TELEGRAM_COMMANDS.md).
+
+## Adjusting rules live via Telegram
+
+Rules can also be changed via chat instead of editing
+`config/rules.yaml` — `/setrisk 1.5`, `/setcooldown 2 60`, `/status`,
+`/pause`, etc. Live changes go through the same `RulesStore` that
+`config/rules.yaml` feeds, so enforcement behaves identically regardless of
+where a rule's value came from. Full command list and access-control setup:
+[`docs/TELEGRAM_COMMANDS.md`](docs/TELEGRAM_COMMANDS.md).
 
 ## Project layout
 
 ```
 config/
-  rules.yaml          # the trader's rules — entry/exit, risk, cooldowns (PLACEHOLDERS)
-  settings.yaml        # app behavior — enforcement mode, polling, logging
+  rules.yaml            # the trader's rules — entry/exit, risk, cooldowns (PLACEHOLDERS)
+  rules_overrides.yaml  # live changes made via Telegram (runtime-generated, git-ignored)
+  settings.yaml         # app behavior — enforcement mode, polling, logging, Telegram access
 discipline_framework/
-  config.py            # loads + validates rules.yaml / settings.yaml / .env
-  rules/                # rule data models + the RuleEngine that checks them
-  mt5_bridge/           # MetaTrader5 connection: real client + mock client
-  enforcement/          # Passive / Active / Hybrid enforcement modes
-  alerts/               # Telegram alerting
-  logging_stats/        # compliance logging (JSONL) + stats reporting
-  main.py               # monitoring loop entrypoint
+  config.py             # loads + validates rules.yaml / settings.yaml / .env
+  rules/                 # rule models, the RuleEngine, and RulesStore (live-mutable rules)
+  mt5_bridge/            # MetaTrader5 connection: real client + mock client
+  enforcement/           # Passive / Active / Hybrid enforcement modes + pause/resume wrapper
+  alerts/                # Telegram alerting
+  commands/               # Telegram /command interface (rule changes, pause/resume)
+  logging_stats/          # compliance logging (JSONL) + stats reporting
+  main.py                 # monitoring loop entrypoint
 scripts/
   run_monitor.py        # CLI entrypoint
   compliance_report.py  # prints a compliance stats summary
-tests/                  # unit tests (run against the mock MT5 client)
+tests/                  # unit tests (run against the mock MT5 client, no network)
 ```
 
 ## Setup
@@ -92,4 +107,6 @@ Everything in `config/rules.yaml` is a labeled placeholder. Once we have the
 client's actual numbers (max risk %, pip targets, cooldown length, session
 hours, symbols, max trades/day), they drop into that one file — no code
 changes needed. See the comments in that file for what each field controls
-and how it's used by `discipline_framework/rules/engine.py`.
+and how it's used by `discipline_framework/rules/engine.py`. They can also
+be set directly by the client via Telegram commands once he has bot access
+— see [`docs/TELEGRAM_COMMANDS.md`](docs/TELEGRAM_COMMANDS.md).

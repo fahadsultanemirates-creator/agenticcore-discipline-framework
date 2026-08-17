@@ -10,6 +10,7 @@ from discipline_framework.rules.models import (
     TargetRules,
     TradingRules,
 )
+from discipline_framework.rules.store import RulesStore
 
 __all__ = [
     "RuleEngine",
@@ -20,4 +21,5 @@ __all__ = [
     "SessionRules",
     "TargetRules",
     "TradingRules",
+    "RulesStore",
 ]

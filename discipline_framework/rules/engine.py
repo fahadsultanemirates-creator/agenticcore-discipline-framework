@@ -18,6 +18,7 @@ from datetime import datetime, time, timedelta, timezone
 
 from discipline_framework.mt5_bridge.models import AccountSnapshot
 from discipline_framework.rules.models import CheckResult, Severity, TradingRules
+from discipline_framework.rules.store import RulesStore
 
 
 def _parse_hhmm(value: str) -> time:
@@ -307,12 +308,26 @@ DEFAULT_CHECKS = [
 
 
 class RuleEngine:
-    def __init__(self, rules: TradingRules, checks=None) -> None:
-        self.rules = rules
+    """Evaluates against whatever TradingRules a RulesStore currently holds.
+
+    Accepts either a RulesStore directly (the live case: main.py shares one
+    store between this engine and the Telegram command interface, so a
+    mid-session /setrisk takes effect on the very next cycle) or a plain
+    TradingRules (the static case: tests, or any caller that doesn't need
+    live updates), which is wrapped in a private, non-persisting RulesStore.
+    """
+
+    def __init__(self, rules: TradingRules | RulesStore, checks=None) -> None:
+        self._store = rules if isinstance(rules, RulesStore) else RulesStore(rules)
         self._checks = list(checks) if checks is not None else list(DEFAULT_CHECKS)
 
+    @property
+    def rules(self) -> TradingRules:
+        return self._store.rules
+
     def evaluate(self, snapshot: AccountSnapshot) -> list[CheckResult]:
+        rules = self.rules
         results: list[CheckResult] = []
         for check in self._checks:
-            results.extend(check(self.rules, snapshot))
+            results.extend(check(rules, snapshot))
         return results

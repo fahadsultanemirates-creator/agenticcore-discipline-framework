@@ -23,6 +23,9 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RULES_PATH = PROJECT_ROOT / "config" / "rules.yaml"
 DEFAULT_SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.yaml"
+# Sparse patch of rules changed live via Telegram commands, layered on top
+# of rules.yaml at load time. Runtime state, not hand-edited — gitignored.
+DEFAULT_RULES_OVERRIDES_PATH = PROJECT_ROOT / "config" / "rules_overrides.yaml"
 
 
 class EnforcementSettings(BaseModel):
@@ -42,6 +45,10 @@ class MT5Settings(BaseModel):
 class TelegramSettings(BaseModel):
     enabled: bool = True
     min_severity: Severity = Severity.WARNING
+    commands_enabled: bool = True
+    # Empty = open access. See config/settings.yaml's comment on this field
+    # and docs/TELEGRAM_COMMANDS.md before handing off to the client.
+    authorized_user_ids: list[int] = Field(default_factory=list)
 
 
 class LoggingSettings(BaseModel):
