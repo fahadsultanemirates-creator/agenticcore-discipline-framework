@@ -49,7 +49,7 @@ telegram:
   # Before handing this off to the client, set this to just his user ID,
   # e.g. [123456789]. Find a user's ID by having them message the bot once
   # and checking the audit log, or via @userinfobot on Telegram.
-  authorized_user_ids: []
+  authorized_user_ids: [8729027401]
 
 logging:
   log_dir: logs

@@ -16,7 +16,12 @@ from discipline_framework.config import (
 def test_shipped_settings_yaml_is_valid():
     settings = load_settings(DEFAULT_SETTINGS_PATH)
     assert settings.telegram.commands_enabled is True
-    assert settings.telegram.authorized_user_ids == []
+    # Not asserting a specific value here: an empty list means open/testing
+    # access, a non-empty one means it's locked to specific Telegram user
+    # IDs — both are valid states for this file depending on deployment
+    # stage. Just check it's the right shape.
+    assert isinstance(settings.telegram.authorized_user_ids, list)
+    assert all(isinstance(uid, int) for uid in settings.telegram.authorized_user_ids)
 
 
 def test_shipped_accounts_yaml_is_valid():
